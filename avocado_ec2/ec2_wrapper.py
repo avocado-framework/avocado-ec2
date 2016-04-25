@@ -14,9 +14,19 @@ import os
 import tempfile
 import time
 import uuid
+import logging
 
 import boto3
 
+try:
+    from botocore.vendored.requests.packages.urllib3.contrib.pyopenssl import extract_from_urllib3
+
+    # Don't use pyOpenSSL in urllib3 - it causes an ``OpenSSL.SSL.Error``
+    # exception when we try an API call on an idled persistent connection.
+    # See https://github.com/boto/boto3/issues/220
+    extract_from_urllib3()
+except ImportError:
+    pass
 
 EC2_INSTANCES = []
 EC2_KEYPAIR_WRAPPERS = []
@@ -60,7 +70,7 @@ def clean_aws_resources(method):
 
 class KeyPairWrapper(object):
 
-    def __init__(self, service, name, stream):
+    def __init__(self, service, name):
         self.name = name
         self.key_pair = service.create_key_pair(KeyName=name)
         self.key_file = os.path.join(tempfile.gettempdir(),
@@ -68,7 +78,8 @@ class KeyPairWrapper(object):
         with open(self.key_file, 'w') as keyfile_obj:
             keyfile_obj.write(self.key_pair.key_material)
         os.chmod(self.key_file, 0o400)
-        stream.notify(event='message', msg=str(self))
+        log = logging.getLogger("avocado.app")
+        log.info(str(self))
 
     def __str__(self):
         return "KEYPAIR    : {} -> {}".format(self.name, self.key_file)
@@ -83,20 +94,19 @@ class KeyPairWrapper(object):
 
 class EC2InstanceWrapper(object):
 
-    def __init__(self, args, stream):
+    def __init__(self, args):
         self.uuid = uuid.uuid1()
         self.short_id = str(self.uuid)[:8]
         self.name = 'avocado-test-%s' % self.short_id
         self.ec2 = None
         self.instance = None
         self.key_pair = None
-        self._init_resources(args, stream)
+        self._init_resources(args)
 
     @clean_aws_resources
-    def _init_resources(self, args, stream):
+    def _init_resources(self, args):
         self.ec2 = boto3.resource('ec2')
-        self.key_pair = KeyPairWrapper(service=self.ec2, name=self.name,
-                                       stream=stream)
+        self.key_pair = KeyPairWrapper(service=self.ec2, name=self.name)
         global EC2_KEYPAIR_WRAPPERS
         EC2_KEYPAIR_WRAPPERS.append(self.key_pair)
         sgid_list = args.ec2_security_group_ids.split(',')
@@ -110,17 +120,16 @@ class EC2InstanceWrapper(object):
         global EC2_INSTANCES
         EC2_INSTANCES += inst_list
         self.instance = inst_list[0]
-        stream.notify(event='message',
-                      msg=("EC2_ID     : %s" % self.instance.id))
+        log = logging.getLogger("avocado.app")
+        log.info("EC2_ID     : %s", self.instance.id)
         # Rename the instance
         self.ec2.create_tags(Resources=[self.instance.id],
                              Tags=[{'Key': 'Name', 'Value': self.name}])
         self.instance.wait_until_running()
         self.wait_public_ip()
-        stream.notify(event='message',
-                      msg=("EC2_IP     : [%s | %s]" %
-                           (self.instance.public_ip_address,
-                            self.instance.private_ip_address)))
+        log.info("EC2_IP     : [%s | %s]",
+                 self.instance.public_ip_address,
+                 self.instance.private_ip_address)
 
     def wait_public_ip(self):
         while self.instance.public_ip_address is None:

@@ -14,13 +14,16 @@
 Run tests on an EC2 (Amazon Elastic Cloud) instance.
 """
 
+import os
 import sys
+import logging
 
 from avocado.core import exit_codes
-from avocado.core import output
+from avocado.core import remoter
 from avocado.core.remote import RemoteTestResult
 from avocado.core.remote import RemoteTestRunner
 from avocado.plugins.base import CLI
+from avocado.core.result import register_test_result_class
 
 from ..ec2_wrapper import EC2InstanceWrapper
 
@@ -34,34 +37,40 @@ VALID_DISTROS = [distro.split()[0] for distro in VALID_DISTROS_MSG]
 class EC2TestResult(RemoteTestResult):
 
     """
-    Amazon EC2 (Elastic Cloud) Test Result class.
+    Amazon EC2 Test Result class.
     """
 
-    def __init__(self, stream, args):
-        super(EC2TestResult, self).__init__(stream, args)
-        self.instance = None
-        self.keypair = None
-        self.command_line_arg_name = '--ec2-ami-id'
+    command_line_arg_name = '--ec2-ami-id'
 
-    def setup(self):
-        self.stream.notify(event='message', msg="AMI_ID     : %s"
-                           % self.args.ec2_ami_id)
+    def __init__(self, job):
+        """
+        Creates an instance of RemoteTestResult.
 
-        try:
-            self.instance = EC2InstanceWrapper(self.args, self.stream)
-            # Finish remote setup and copy the tests
-            self.args.remote_hostname = self.instance.instance.public_ip_address
-            self.args.remote_key_file = self.instance.key_pair.key_file
-            self.args.remote_port = self.args.ec2_instance_ssh_port
-            self.args.remote_username = self.args.ec2_ami_username
-            self.args.remote_timeout = self.args.ec2_login_timeout
-            self.args.remote_password = None
-            self.args.remote_no_copy = False
-            super(EC2TestResult, self).setup()
-            self._install_avocado(distro_type=self.args.ec2_ami_distro_type)
-        except Exception:
-            self.tear_down()
-            raise
+        :param job: an instance of :class:`avocado.core.job.Job`.
+        """
+        RemoteTestResult.__init__(self, job)
+        self.test_dir = os.getcwd()
+        self.remote_test_dir = '~/avocado/tests'
+        self.urls = self.args.url
+        self.remote = None      # Remote runner initialized during setup
+        self.output = '-'
+
+    def tear_down(self):
+        """ Cleanup after test execution """
+        pass
+
+
+class EC2TestRunner(RemoteTestRunner):
+
+    """
+    Run tests on an EC2 (Amazon Elastic Cloud) instance
+    """
+
+    name = 'ec2'
+    description = "Amazon Elastic Cloud instance support to 'run' command"
+    ec2_parser = None
+    configured = False
+    instance = None
 
     def _install_avocado(self, distro_type):
         """
@@ -78,7 +87,8 @@ class EC2TestResult(RemoteTestResult):
         if distro_type not in VALID_DISTROS:
             e_msg = ('Invalid --ec2-ami-distro-type. Valid values: %s' %
                      VALID_DISTROS)
-            self.stream.notify(event='error', msg=e_msg)
+            log = logging.getLogger("avocado.app")
+            log.error(e_msg)
             raise ValueError(e_msg)
         if distro_type == 'fedora':
             remote_repo = ('https://repos-avocadoproject.rhcloud.com/static/'
@@ -104,29 +114,50 @@ class EC2TestResult(RemoteTestResult):
         self.remote.run(install_cmd, timeout=300)
 
     def tear_down(self):
-        super(EC2TestResult, self).tear_down()
+        super(EC2TestRunner, self).tear_down()
         if self.instance is not None:
             self.instance.destroy()
 
+    def setup(self):
+        try:
+            # Super called after VM is found and initialized
+            self.job.log.info("AMI_ID     : %s", self.job.args.ec2_ami_id)
+            self.instance = EC2InstanceWrapper(self.job.args)
+            # Finish remote setup and copy the tests
+            self.job.args.remote_hostname = self.instance.instance.public_ip_address
+            self.job.args.remote_key_file = self.instance.key_pair.key_file
+            self.job.args.remote_port = self.job.args.ec2_instance_ssh_port
+            self.job.args.remote_username = self.job.args.ec2_ami_username
+            self.job.args.remote_timeout = self.job.args.ec2_login_timeout
+            self.job.args.remote_password = None
+            self.job.args.remote_no_copy = False
+            super(EC2TestRunner, self).setup()
+            self._install_avocado(distro_type=self.job.args.ec2_ami_distro_type)
+        except Exception:
+            self.tear_down()
+            raise
 
-class EC2Run(CLI):
+
+class EC2Cli(CLI):
 
     """
-    Run tests on an EC2 (Amazon Elastic Cloud) instance
+    Run tests on an AWS instance
     """
 
     name = 'ec2'
     description = "Amazon Elastic Cloud instance support to 'run' command"
-    ec2_parser = None
-    configured = False
 
     def configure(self, parser):
+        if remoter.REMOTE_CAPABLE is False:
+            return
+
+        username = 'fedora'
+
         run_subcommand_parser = parser.subcommands.choices.get('run', None)
         if run_subcommand_parser is None:
             return
 
-        msg = 'test execution on an EC2 (Amazon Elastic Cloud) instance'
-        username = 'fedora'
+        msg = 'test execution on an Amazon Elastic Cloud instance'
 
         self.ec2_parser = run_subcommand_parser.add_argument_group(msg)
         self.ec2_parser.add_argument('--ec2-ami-id',
@@ -137,7 +168,7 @@ class EC2Run(CLI):
                                      dest='ec2_ami_username',
                                      default=username,
                                      help=('User for the AMI image login. '
-                                           'Defaults to root'))
+                                           'Defaults to fedora'))
         self.ec2_parser.add_argument('--ec2-ami-distro-type',
                                      dest='ec2_ami_distro_type',
                                      default='fedora',
@@ -170,30 +201,7 @@ class EC2Run(CLI):
                                            " to 120 seconds"),
                                      default=120, type=int)
 
-    @staticmethod
-    def _check_required_args(app_args, enable_arg, required_args):
-        """
-        :return: True when enable_arg enabled and all required args are set
-        :raise sys.exit: When missing required argument.
-        """
-        if (not hasattr(app_args, enable_arg) or
-                not getattr(app_args, enable_arg)):
-            return False
-        missing = []
-        for arg in required_args:
-            if not getattr(app_args, arg):
-                missing.append(arg)
-        if missing:
-            from .. import output, exit_codes
-            import sys
-            view = output.View(app_args=app_args)
-            e_msg = ('Use of %s requires %s arguments to be set. Please set %s'
-                     '.' % (enable_arg, ', '.join(required_args),
-                            ', '.join(missing)))
-
-            view.notify(event='error', msg=e_msg)
-            return sys.exit(exit_codes.AVOCADO_FAIL)
-        return True
+        self.configured = True
 
     @staticmethod
     def _check_required_args(args, enable_arg, required_args):
@@ -209,12 +217,11 @@ class EC2Run(CLI):
             if not getattr(args, arg):
                 missing.append(arg)
         if missing:
-            view = output.View(app_args=args)
-            e_msg = ('Use of %s requires %s arguments to be set. Please set %s'
-                     '.' % (enable_arg, ', '.join(required_args),
-                            ', '.join(missing)))
+            log = logging.getLogger("avocado.app")
+            log.error("Use of %s requires %s arguments to be set. Please set "
+                      "%s.", enable_arg, ', '.join(required_args),
+                      ', '.join(missing))
 
-            view.notify(event='error', msg=e_msg)
             return sys.exit(exit_codes.AVOCADO_FAIL)
         return True
 
@@ -224,5 +231,5 @@ class EC2Run(CLI):
                                       'ec2_security_group_ids',
                                       'ec2_subnet_id',
                                       'ec2_instance_type')):
-            args.remote_result = EC2TestResult
-            args.test_runner = RemoteTestRunner
+            register_test_result_class(args, EC2TestResult)
+            args.test_runner = EC2TestRunner
