@@ -13,7 +13,7 @@
 # pylint: disable=E0611
 from setuptools import setup
 
-VERSION = '0.32.0'
+VERSION = '0.34.0'
 
 setup(name='avocado-plugins-ec2',
       version=VERSION,
@@ -25,7 +25,7 @@ setup(name='avocado-plugins-ec2',
                 'avocado_ec2.plugins'],
       entry_points={
           'avocado.plugins.cli': [
-              'ec2 = avocado_ec2.plugins.ec2:EC2Run',
+              'ec2 = avocado_ec2.plugins.ec2:EC2Cli',
               ],
           },
       )
