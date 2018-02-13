@@ -91,17 +91,17 @@ class EC2TestRunner(RemoteTestRunner):
             log.error(e_msg)
             raise ValueError(e_msg)
         if distro_type == 'fedora':
-            remote_repo = ('https://repos-avocadoproject.rhcloud.com/static/'
+            remote_repo = ('https://avocado-project.org/data/repos/'
                            'avocado-fedora.repo')
             local_repo = '/etc/yum.repos.d/avocado.repo'
             retrieve_cmd = 'sudo curl %s -o %s' % (remote_repo, local_repo)
-            install_cmd = 'sudo dnf install -y avocado'
+            install_cmd = 'sudo dnf install -y python-avocado'
         elif distro_type == 'el':
-            remote_repo = ('https://repos-avocadoproject.rhcloud.com/static/'
+            remote_repo = ('https://avocado-project.org/data/repos/'
                            'avocado-el.repo')
             local_repo = '/etc/yum.repos.d/avocado.repo'
             retrieve_cmd = 'sudo curl %s -o %s' % (remote_repo, local_repo)
-            install_cmd = 'sudo yum install -y avocado'
+            install_cmd = 'sudo yum install -y python-avocado'
         elif distro_type == 'ubuntu':
             remote_repo = ('deb http://ppa.launchpad.net/lmr/avocado/ubuntu '
                            'wily main')
